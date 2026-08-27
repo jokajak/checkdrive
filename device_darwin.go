@@ -14,6 +14,11 @@ import (
 	"syscall"
 )
 
+const (
+	diskutilPath = "/usr/sbin/diskutil"
+	plutilPath   = "/usr/bin/plutil"
+)
+
 var identifierRE = regexp.MustCompile(`^disk[0-9]+(s[0-9]+)*$`)
 
 // normalizeIdentifier accepts disk4, /dev/disk4 or /dev/rdisk4 and returns the
@@ -46,29 +51,33 @@ func (b *flexBool) UnmarshalJSON(data []byte) error {
 		switch strings.ToLower(t) {
 		case "yes", "true", "removable", "external":
 			*b = true
-		default:
+		case "no", "false", "fixed", "internal":
 			*b = false
+		default:
+			return fmt.Errorf("unrecognized boolean value %q", t)
 		}
+	default:
+		return fmt.Errorf("cannot decode boolean from %T", v)
 	}
 	return nil
 }
 
 type duInfo struct {
-	DeviceIdentifier    string   `json:"DeviceIdentifier"`
-	DeviceNode          string   `json:"DeviceNode"`
-	DeviceBlockSize     int64    `json:"DeviceBlockSize"`
-	TotalSize           int64    `json:"TotalSize"`
-	Size                int64    `json:"Size"`
-	Internal            flexBool `json:"Internal"`
-	Ejectable           flexBool `json:"Ejectable"`
-	RemovableMedia      flexBool `json:"RemovableMedia"`
-	WholeDisk           flexBool `json:"WholeDisk"`
-	SolidState          flexBool `json:"SolidState"`
-	BusProtocol         string   `json:"BusProtocol"`
-	MediaName           string   `json:"MediaName"`
-	IORegistryEntryName string   `json:"IORegistryEntryName"`
-	MountPoint          string   `json:"MountPoint"`
-	VolumeName          string   `json:"VolumeName"`
+	DeviceIdentifier    string    `json:"DeviceIdentifier"`
+	DeviceNode          string    `json:"DeviceNode"`
+	DeviceBlockSize     int64     `json:"DeviceBlockSize"`
+	TotalSize           int64     `json:"TotalSize"`
+	Size                int64     `json:"Size"`
+	Internal            *flexBool `json:"Internal"`
+	Ejectable           flexBool  `json:"Ejectable"`
+	RemovableMedia      flexBool  `json:"RemovableMedia"`
+	WholeDisk           *flexBool `json:"WholeDisk"`
+	SolidState          flexBool  `json:"SolidState"`
+	BusProtocol         string    `json:"BusProtocol"`
+	MediaName           string    `json:"MediaName"`
+	IORegistryEntryName string    `json:"IORegistryEntryName"`
+	MountPoint          string    `json:"MountPoint"`
+	VolumeName          string    `json:"VolumeName"`
 }
 
 type duPartition struct {
@@ -95,13 +104,16 @@ func plistJSON(out any, name string, args ...string) error {
 	if err != nil {
 		return err
 	}
-	conv := exec.Command("plutil", "-convert", "json", "-o", "-", "-")
+	// Never resolve privileged helpers through the caller's PATH. checkdrive is
+	// normally run with sudo, and executing a user-selected binary as root would
+	// turn an otherwise harmless environment setting into code execution.
+	conv := exec.Command(plutilPath, "-convert", "json", "-o", "-", "-")
 	conv.Stdin = bytes.NewReader(raw)
 	var stderr bytes.Buffer
 	conv.Stderr = &stderr
 	js, err := conv.Output()
 	if err != nil {
-		return fmt.Errorf("plutil: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("%s: %w: %s", plutilPath, err, strings.TrimSpace(stderr.String()))
 	}
 	return json.Unmarshal(js, out)
 }
@@ -130,8 +142,16 @@ func probeDisk(target string) (diskInfo, error) {
 	}
 
 	var info duInfo
-	if err := plistJSON(&info, "diskutil", "info", "-plist", id); err != nil {
+	if err := plistJSON(&info, diskutilPath, "info", "-plist", id); err != nil {
 		return diskInfo{}, err
+	}
+	if info.DeviceIdentifier != id {
+		return diskInfo{}, fmt.Errorf("%s reported unexpected identifier %q for %q", diskutilPath, info.DeviceIdentifier, id)
+	}
+	// These two fields drive the checks that protect the system disk. Treat a
+	// missing field as an incompatible diskutil response, never as a safe false.
+	if info.Internal == nil || info.WholeDisk == nil {
+		return diskInfo{}, fmt.Errorf("%s returned incomplete safety metadata for %q", diskutilPath, id)
 	}
 
 	size := info.TotalSize
@@ -149,9 +169,9 @@ func probeDisk(target string) (diskInfo, error) {
 		RawPath:    "/dev/r" + id,
 		Model:      strings.TrimSpace(model),
 		Protocol:   info.BusProtocol,
-		Internal:   bool(info.Internal),
+		Internal:   bool(*info.Internal),
 		Removable:  bool(info.RemovableMedia) || bool(info.Ejectable),
-		WholeDisk:  bool(info.WholeDisk),
+		WholeDisk:  bool(*info.WholeDisk),
 		SolidState: bool(info.SolidState),
 		BlockSize:  info.DeviceBlockSize,
 		Size:       size,
@@ -174,7 +194,7 @@ func probeDisk(target string) (diskInfo, error) {
 // mountedOn returns every mounted volume that belongs to the given whole disk.
 func mountedOn(id string) ([]mountedVolume, error) {
 	var list duList
-	if err := plistJSON(&list, "diskutil", "list", "-plist", id); err != nil {
+	if err := plistJSON(&list, diskutilPath, "list", "-plist", id); err != nil {
 		return nil, err
 	}
 	var out []mountedVolume
@@ -195,7 +215,7 @@ func mountedOn(id string) ([]mountedVolume, error) {
 // listDisks enumerates whole disks, external ones first.
 func listDisks() ([]diskInfo, error) {
 	var list duList
-	if err := plistJSON(&list, "diskutil", "list", "-plist"); err != nil {
+	if err := plistJSON(&list, diskutilPath, "list", "-plist"); err != nil {
 		return nil, err
 	}
 	var out []diskInfo
@@ -213,14 +233,14 @@ func listDisks() ([]diskInfo, error) {
 // raw device that still has mounted volumes, so this is a prerequisite, not a
 // convenience.
 func unmountDisk(id string) error {
-	_, err := runCommand("diskutil", "unmountDisk", "/dev/"+id)
+	_, err := runCommand(diskutilPath, "unmountDisk", "/dev/"+id)
 	return err
 }
 
 // remountDisk is best effort: it is only ever used to put things back after a
 // successful run.
 func remountDisk(id string) error {
-	_, err := runCommand("diskutil", "mountDisk", "/dev/"+id)
+	_, err := runCommand(diskutilPath, "mountDisk", "/dev/"+id)
 	return err
 }
 
@@ -304,14 +324,18 @@ func (d *rawDevice) writeAt(p []byte, off int64) error {
 	return err
 }
 
-// sync issues F_FULLFSYNC (that is what os.File.Sync does on Darwin), which
-// asks the drive to flush its own write cache rather than merely handing the
-// data to the driver.
+// sync first issues F_FULLFSYNC (that is what os.File.Sync does on Darwin),
+// which asks the drive to flush its own write cache rather than merely handing
+// data to the driver. Some USB raw-device drivers do not implement that ioctl;
+// for those, fall back to fsync rather than rejecting an otherwise usable
+// device.
 func (d *rawDevice) sync() error {
 	if d.readOnly {
 		return nil
 	}
-	return d.f.Sync()
+	return syncWithFallback(d.f.Sync, func() error {
+		return syscall.Fsync(int(d.f.Fd()))
+	}, syscall.ENOTTY)
 }
 
 func (d *rawDevice) reopen() error {

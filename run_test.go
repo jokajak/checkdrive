@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -191,7 +192,9 @@ func TestScanJournalsOriginalsBeforeWriting(t *testing.T) {
 	dev := newFake(8*giB, 8*giB, fakeHonest)
 	cfg := scanConfig(8*giB, 17)
 	path := filepath.Join(t.TempDir(), "run.journal")
-	j, err := newJournal(path, journalHeader{Device: "/dev/disk9", SampleSize: cfg.SampleSize})
+	j, err := newJournal(path, journalHeader{
+		Device: "/dev/disk9", DeviceSize: cfg.End, BlockSize: cfg.BlockSize, SampleSize: cfg.SampleSize,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,5 +221,39 @@ func TestScanJournalsOriginalsBeforeWriting(t *testing.T) {
 		if string(r.Data) != string(want) {
 			t.Fatalf("journal record for offset %d is not the original data", r.Offset)
 		}
+	}
+}
+
+type failFirstSyncDevice struct {
+	*fakeDevice
+	syncCalls int
+}
+
+func (d *failFirstSyncDevice) sync() error {
+	d.syncCalls++
+	if d.syncCalls == 1 {
+		return errors.New("flush failed")
+	}
+	return nil
+}
+
+func TestScanRestoresWritesWhenInitialFlushFails(t *testing.T) {
+	dev := &failFirstSyncDevice{fakeDevice: newFake(8*giB, 8*giB, fakeHonest)}
+	cfg := scanConfig(8*giB, 17)
+
+	_, err := runScan(dev, cfg)
+	if err == nil || !strings.Contains(err.Error(), "flushing writes") {
+		t.Fatalf("runScan returned %v, want a flushing writes error", err)
+	}
+	plan, planErr := buildPlan(cfg.Start, cfg.End, cfg.SampleSize, cfg.BlockSize, cfg.Samples, rngFromSeed(cfg.Seed, "plan"))
+	if planErr != nil {
+		t.Fatal(planErr)
+	}
+	offsets := make([]int64, len(plan))
+	for i, sample := range plan {
+		offsets[i] = sample.Offset
+	}
+	if err := dev.intact(offsets, cfg.SampleSize); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -144,6 +144,10 @@ func runScan(dev blockDevice, cfg runConfig) (*runResult, error) {
 	}
 	progress("write", n, n)
 	if err := dev.sync(); err != nil {
+		// Writes may already have reached the device even when its flush request
+		// fails. Make a best-effort restoration before returning; the caller will
+		// still retain the journal because durability could not be established.
+		restoreOriginals(dev, plan, res, originals, written, progress)
 		return nil, fmt.Errorf("flushing writes: %w", err)
 	}
 
@@ -181,22 +185,7 @@ func runScan(dev blockDevice, cfg runConfig) (*runResult, error) {
 	progress("wrapscan", 1, 1)
 
 	// Phase 4 - put everything back.
-	for i, s := range plan {
-		progress("restore", i, n)
-		if !written[i] || originals[i] == nil {
-			continue
-		}
-		if err := dev.writeAt(originals[i], s.Offset); err != nil {
-			res.RestoreErrors = append(res.RestoreErrors,
-				fmt.Sprintf("offset %d (%s): %v", s.Offset, humanBytes(s.Offset), err))
-			continue
-		}
-		res.Samples[i].Restored = true
-	}
-	progress("restore", n, n)
-	if err := dev.sync(); err != nil {
-		res.RestoreErrors = append(res.RestoreErrors, fmt.Sprintf("final flush: %v", err))
-	}
+	restoreOriginals(dev, plan, res, originals, written, progress)
 
 	finalize(res)
 
@@ -210,6 +199,25 @@ func runScan(dev blockDevice, cfg runConfig) (*runResult, error) {
 		}
 	}
 	return res, nil
+}
+
+func restoreOriginals(dev blockDevice, plan []Sample, res *runResult, originals [][]byte, written []bool, progress func(string, int, int)) {
+	for i, s := range plan {
+		progress("restore", i, len(plan))
+		if !written[i] || originals[i] == nil {
+			continue
+		}
+		if err := dev.writeAt(originals[i], s.Offset); err != nil {
+			res.RestoreErrors = append(res.RestoreErrors,
+				fmt.Sprintf("offset %d (%s): %v", s.Offset, humanBytes(s.Offset), err))
+			continue
+		}
+		res.Samples[i].Restored = true
+	}
+	progress("restore", len(plan), len(plan))
+	if err := dev.sync(); err != nil {
+		res.RestoreErrors = append(res.RestoreErrors, fmt.Sprintf("final flush: %v", err))
+	}
 }
 
 func finalize(res *runResult) {
@@ -271,6 +279,7 @@ func estimateCapacity(dev blockDevice, cfg runConfig, plan []Sample, res *runRes
 	}
 
 	decoy := plan[0].Offset
+	restoreFailed := false
 	probe := func(off int64) bool {
 		orig := make([]byte, cfg.SampleSize)
 		if err := dev.readAt(orig, off); err != nil {
@@ -294,14 +303,21 @@ func estimateCapacity(dev blockDevice, cfg runConfig, plan []Sample, res *runRes
 			readErr = dev.readAt(got, off)
 		}
 
-		// Always put the original back, whatever happened above.
-		if err := dev.writeAt(orig, off); err == nil {
-			_ = dev.sync()
+		// Always put the original back, whatever happened above. A failed restore
+		// must be visible to the caller so the undo journal is retained.
+		if err := dev.writeAt(orig, off); err != nil {
+			restoreFailed = true
+			res.RestoreErrors = append(res.RestoreErrors,
+				fmt.Sprintf("capacity probe offset %d (%s): %v", off, humanBytes(off), err))
+		} else if err := dev.sync(); err != nil {
+			restoreFailed = true
+			res.RestoreErrors = append(res.RestoreErrors,
+				fmt.Sprintf("capacity probe flush at offset %d (%s): %v", off, humanBytes(off), err))
 		}
 		return writeErr == nil && readErr == nil && bytes.Equal(got, want)
 	}
 
-	for hi-lo > 1 && res.Probes < maxProbes {
+	for hi-lo > 1 && res.Probes < maxProbes && !restoreFailed {
 		mid := lo + (hi-lo)/2
 		progress("estimate", res.Probes, maxProbes)
 		res.Probes++
@@ -318,8 +334,12 @@ func estimateCapacity(dev blockDevice, cfg runConfig, plan []Sample, res *runRes
 		res.EstimatedCapacity = start
 	}
 	if hi-lo > 1 {
-		res.EstimateNote = fmt.Sprintf("stopped after %d probes; the boundary is somewhere between %s and %s",
-			maxProbes, humanBytes(start+(lo+1)*cfg.SampleSize), humanBytes(start+hi*cfg.SampleSize))
+		reason := fmt.Sprintf("stopped after %d probes", maxProbes)
+		if restoreFailed {
+			reason = "stopped because a capacity probe could not be safely restored"
+		}
+		res.EstimateNote = fmt.Sprintf("%s; the boundary is somewhere between %s and %s",
+			reason, humanBytes(start+(lo+1)*cfg.SampleSize), humanBytes(start+hi*cfg.SampleSize))
 	}
 }
 

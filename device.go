@@ -9,6 +9,17 @@ import (
 // errUnsupported is returned by the non-darwin build of the device layer.
 var errUnsupported = errors.New("checkdrive can only talk to raw devices on macOS")
 
+// syncWithFallback retries a durability request with fsync when a device does
+// not implement the stronger Darwin F_FULLFSYNC ioctl. Some USB mass-storage
+// drivers return ENOTTY for that ioctl even though fsync works normally.
+func syncWithFallback(fullSync, fsync func() error, unsupported error) error {
+	err := fullSync()
+	if errors.Is(err, unsupported) {
+		return fsync()
+	}
+	return err
+}
+
 // blockDevice is the small surface the scan engine needs. The real
 // implementation lives in device_darwin.go; tests drive a memory-backed fake.
 type blockDevice interface {

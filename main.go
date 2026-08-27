@@ -194,6 +194,12 @@ func doCheck(o options) error {
 		if info, err = probeDisk(info.Identifier); err != nil {
 			return err
 		}
+		if err := checkSafety(info, o); err != nil {
+			return fmt.Errorf("target changed after unmount: %w", err)
+		}
+		if len(info.Mounted) > 0 {
+			return fmt.Errorf("%s still has mounted volumes after unmount", info.Identifier)
+		}
 	}
 	if err := confirm(info, o); err != nil {
 		return err
@@ -313,6 +319,19 @@ func doRestore(o options) error {
 	if o.unmount && len(info.Mounted) > 0 {
 		if err := unmountDisk(info.Identifier); err != nil {
 			return err
+		}
+		if info, err = probeDisk(info.Identifier); err != nil {
+			return err
+		}
+		if info.Size != hdr.DeviceSize && !o.force {
+			return fmt.Errorf("target changed after unmount: %s is %s but the journal expects %s",
+				info.Identifier, humanBytes(info.Size), humanBytes(hdr.DeviceSize))
+		}
+		if err := checkSafety(info, o); err != nil {
+			return fmt.Errorf("target changed after unmount: %w", err)
+		}
+		if len(info.Mounted) > 0 {
+			return fmt.Errorf("%s still has mounted volumes after unmount", info.Identifier)
 		}
 	}
 	if err := confirm(info, o); err != nil {

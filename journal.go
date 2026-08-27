@@ -20,6 +20,8 @@ import (
 
 const journalMagic = "CHKDRVJ1"
 
+const maxJournalHeader = 64 << 10
+
 type journalHeader struct {
 	Version    int       `json:"version"`
 	Created    time.Time `json:"created"`
@@ -56,9 +58,13 @@ func newJournal(path string, hdr journalHeader) (*journal, error) {
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(blob)))
 	buf = append(buf, blob...)
 	if _, err := f.Write(buf); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
 		return nil, err
 	}
 	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
 		return nil, err
 	}
 	return &journal{path: path, f: f}, nil
@@ -125,12 +131,21 @@ func readJournal(path string) (journalHeader, []journalRecord, error) {
 	if err := binary.Read(f, binary.LittleEndian, &hdrLen); err != nil {
 		return hdr, nil, err
 	}
+	if hdrLen == 0 || hdrLen > maxJournalHeader {
+		return hdr, nil, fmt.Errorf("journal header length %d is invalid", hdrLen)
+	}
 	blob := make([]byte, hdrLen)
 	if _, err := io.ReadFull(f, blob); err != nil {
 		return hdr, nil, err
 	}
 	if err := json.Unmarshal(blob, &hdr); err != nil {
 		return hdr, nil, err
+	}
+	if hdr.Version != 1 {
+		return hdr, nil, fmt.Errorf("unsupported journal version %d", hdr.Version)
+	}
+	if hdr.DeviceSize <= 0 || hdr.BlockSize <= 0 || hdr.SampleSize <= 0 || hdr.SampleSize > hdr.DeviceSize || hdr.SampleSize%hdr.BlockSize != 0 {
+		return hdr, nil, errors.New("journal has invalid device or block sizes")
 	}
 
 	var records []journalRecord
@@ -145,6 +160,12 @@ func readJournal(path string) (journalHeader, []journalRecord, error) {
 		}
 		if err := binary.Read(f, binary.LittleEndian, &length); err != nil {
 			break // torn record
+		}
+		if length == 0 || int64(length) != hdr.SampleSize {
+			return hdr, records, fmt.Errorf("journal record at offset %d has invalid length %d", offset, length)
+		}
+		if offset > uint64(hdr.DeviceSize-hdr.SampleSize) || offset%uint64(hdr.BlockSize) != 0 {
+			return hdr, records, fmt.Errorf("journal record offset %d is outside or unaligned for the recorded device", offset)
 		}
 		data := make([]byte, length)
 		if _, err := io.ReadFull(f, data); err != nil {
