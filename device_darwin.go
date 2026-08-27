@@ -51,29 +51,33 @@ func (b *flexBool) UnmarshalJSON(data []byte) error {
 		switch strings.ToLower(t) {
 		case "yes", "true", "removable", "external":
 			*b = true
-		default:
+		case "no", "false", "fixed", "internal":
 			*b = false
+		default:
+			return fmt.Errorf("unrecognized boolean value %q", t)
 		}
+	default:
+		return fmt.Errorf("cannot decode boolean from %T", v)
 	}
 	return nil
 }
 
 type duInfo struct {
-	DeviceIdentifier    string   `json:"DeviceIdentifier"`
-	DeviceNode          string   `json:"DeviceNode"`
-	DeviceBlockSize     int64    `json:"DeviceBlockSize"`
-	TotalSize           int64    `json:"TotalSize"`
-	Size                int64    `json:"Size"`
-	Internal            flexBool `json:"Internal"`
-	Ejectable           flexBool `json:"Ejectable"`
-	RemovableMedia      flexBool `json:"RemovableMedia"`
-	WholeDisk           flexBool `json:"WholeDisk"`
-	SolidState          flexBool `json:"SolidState"`
-	BusProtocol         string   `json:"BusProtocol"`
-	MediaName           string   `json:"MediaName"`
-	IORegistryEntryName string   `json:"IORegistryEntryName"`
-	MountPoint          string   `json:"MountPoint"`
-	VolumeName          string   `json:"VolumeName"`
+	DeviceIdentifier    string    `json:"DeviceIdentifier"`
+	DeviceNode          string    `json:"DeviceNode"`
+	DeviceBlockSize     int64     `json:"DeviceBlockSize"`
+	TotalSize           int64     `json:"TotalSize"`
+	Size                int64     `json:"Size"`
+	Internal            *flexBool `json:"Internal"`
+	Ejectable           flexBool  `json:"Ejectable"`
+	RemovableMedia      flexBool  `json:"RemovableMedia"`
+	WholeDisk           *flexBool `json:"WholeDisk"`
+	SolidState          flexBool  `json:"SolidState"`
+	BusProtocol         string    `json:"BusProtocol"`
+	MediaName           string    `json:"MediaName"`
+	IORegistryEntryName string    `json:"IORegistryEntryName"`
+	MountPoint          string    `json:"MountPoint"`
+	VolumeName          string    `json:"VolumeName"`
 }
 
 type duPartition struct {
@@ -144,6 +148,11 @@ func probeDisk(target string) (diskInfo, error) {
 	if info.DeviceIdentifier != id {
 		return diskInfo{}, fmt.Errorf("%s reported unexpected identifier %q for %q", diskutilPath, info.DeviceIdentifier, id)
 	}
+	// These two fields drive the checks that protect the system disk. Treat a
+	// missing field as an incompatible diskutil response, never as a safe false.
+	if info.Internal == nil || info.WholeDisk == nil {
+		return diskInfo{}, fmt.Errorf("%s returned incomplete safety metadata for %q", diskutilPath, id)
+	}
 
 	size := info.TotalSize
 	if size == 0 {
@@ -160,9 +169,9 @@ func probeDisk(target string) (diskInfo, error) {
 		RawPath:    "/dev/r" + id,
 		Model:      strings.TrimSpace(model),
 		Protocol:   info.BusProtocol,
-		Internal:   bool(info.Internal),
+		Internal:   bool(*info.Internal),
 		Removable:  bool(info.RemovableMedia) || bool(info.Ejectable),
-		WholeDisk:  bool(info.WholeDisk),
+		WholeDisk:  bool(*info.WholeDisk),
 		SolidState: bool(info.SolidState),
 		BlockSize:  info.DeviceBlockSize,
 		Size:       size,
@@ -315,14 +324,18 @@ func (d *rawDevice) writeAt(p []byte, off int64) error {
 	return err
 }
 
-// sync issues F_FULLFSYNC (that is what os.File.Sync does on Darwin), which
-// asks the drive to flush its own write cache rather than merely handing the
-// data to the driver.
+// sync first issues F_FULLFSYNC (that is what os.File.Sync does on Darwin),
+// which asks the drive to flush its own write cache rather than merely handing
+// data to the driver. Some USB raw-device drivers do not implement that ioctl;
+// for those, fall back to fsync rather than rejecting an otherwise usable
+// device.
 func (d *rawDevice) sync() error {
 	if d.readOnly {
 		return nil
 	}
-	return d.f.Sync()
+	return syncWithFallback(d.f.Sync, func() error {
+		return syscall.Fsync(int(d.f.Fd()))
+	}, syscall.ENOTTY)
 }
 
 func (d *rawDevice) reopen() error {

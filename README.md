@@ -43,7 +43,8 @@ contents you can afford to lose.
 
 - **Raw character device.** All I/O goes through `/dev/rdiskN`, which bypasses the unified buffer
   cache, so a read comes from the media rather than from RAM holding what was just written.
-  `os.File.Sync` on Darwin issues `F_FULLFSYNC`, which asks the drive to flush its own cache too.
+  checkdrive requests Darwin's `F_FULLFSYNC`, which asks the drive to flush its own cache too. USB
+  drivers that do not support that ioctl are flushed with `fsync` instead.
 - **Write everything, then verify everything.** Verification happens after the whole write pass,
   through a reopened file descriptor and in a shuffled order, so a small on-drive cache cannot
   cover for flash that never received the data.
