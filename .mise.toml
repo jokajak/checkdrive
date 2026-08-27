@@ -1,0 +1,55 @@
+[tools]
+go = "1.24"
+
+[tasks.fmt]
+description = "Format all Go source files"
+run = "gofmt -w ."
+
+[tasks.fmt-check]
+description = "Check Go formatting without changing files"
+run = '''
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+  printf 'gofmt needed for:\n%s\n' "$unformatted"
+  exit 1
+fi
+'''
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.vet-darwin]
+description = "Run go vet for both macOS architectures"
+run = [
+  "GOOS=darwin GOARCH=arm64 go vet ./...",
+  "GOOS=darwin GOARCH=amd64 go vet ./...",
+]
+
+[tasks.test]
+description = "Run the Go test suite"
+run = "go test ./..."
+
+[tasks.build]
+description = "Build the checkdrive binary"
+run = "go build -o checkdrive ."
+
+[tasks.build-darwin-arm64]
+description = "Cross-build the Apple Silicon macOS binary"
+run = "GOOS=darwin GOARCH=arm64 go build -o checkdrive-darwin-arm64 ."
+
+[tasks.build-darwin-amd64]
+description = "Cross-build the Intel macOS binary"
+run = "GOOS=darwin GOARCH=amd64 go build -o checkdrive-darwin-amd64 ."
+
+[tasks.build-darwin]
+description = "Cross-build both macOS architectures"
+depends = ["build-darwin-arm64", "build-darwin-amd64"]
+
+[tasks.ci]
+description = "Run the checks required by continuous integration"
+depends = ["fmt-check", "vet", "test", "vet-darwin", "build-darwin"]
+
+[tasks.install]
+description = "Install the current checkout into GOPATH/bin"
+run = "go install ."
