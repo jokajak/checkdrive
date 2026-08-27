@@ -191,7 +191,9 @@ func TestScanJournalsOriginalsBeforeWriting(t *testing.T) {
 	dev := newFake(8*giB, 8*giB, fakeHonest)
 	cfg := scanConfig(8*giB, 17)
 	path := filepath.Join(t.TempDir(), "run.journal")
-	j, err := newJournal(path, journalHeader{Device: "/dev/disk9", SampleSize: cfg.SampleSize})
+	j, err := newJournal(path, journalHeader{
+		Device: "/dev/disk9", DeviceSize: cfg.End, BlockSize: cfg.BlockSize, SampleSize: cfg.SampleSize,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
