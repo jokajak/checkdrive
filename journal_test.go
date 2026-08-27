@@ -24,8 +24,8 @@ func TestJournalRoundTrip(t *testing.T) {
 	}
 	blocks := map[int64][]byte{
 		0:        make([]byte, 4096),
-		1 << 20:  []byte("hello"),
-		64 << 20: []byte("world"),
+		1 << 20:  append([]byte("hello"), make([]byte, 4091)...),
+		64 << 20: append([]byte("world"), make([]byte, 4091)...),
 	}
 	for off, data := range blocks {
 		if err := j.record(off, data); err != nil {
@@ -57,7 +57,9 @@ func TestJournalRoundTrip(t *testing.T) {
 // still usable and must be replayable.
 func TestJournalToleratesTornTail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "j")
-	j, err := newJournal(path, journalHeader{Identifier: "disk9"})
+	j, err := newJournal(path, journalHeader{
+		Identifier: "disk9", DeviceSize: 1 << 20, BlockSize: 1, SampleSize: 10,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

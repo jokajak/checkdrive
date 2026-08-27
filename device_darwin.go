@@ -14,6 +14,11 @@ import (
 	"syscall"
 )
 
+const (
+	diskutilPath = "/usr/sbin/diskutil"
+	plutilPath   = "/usr/bin/plutil"
+)
+
 var identifierRE = regexp.MustCompile(`^disk[0-9]+(s[0-9]+)*$`)
 
 // normalizeIdentifier accepts disk4, /dev/disk4 or /dev/rdisk4 and returns the
@@ -95,13 +100,16 @@ func plistJSON(out any, name string, args ...string) error {
 	if err != nil {
 		return err
 	}
-	conv := exec.Command("plutil", "-convert", "json", "-o", "-", "-")
+	// Never resolve privileged helpers through the caller's PATH. checkdrive is
+	// normally run with sudo, and executing a user-selected binary as root would
+	// turn an otherwise harmless environment setting into code execution.
+	conv := exec.Command(plutilPath, "-convert", "json", "-o", "-", "-")
 	conv.Stdin = bytes.NewReader(raw)
 	var stderr bytes.Buffer
 	conv.Stderr = &stderr
 	js, err := conv.Output()
 	if err != nil {
-		return fmt.Errorf("plutil: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("%s: %w: %s", plutilPath, err, strings.TrimSpace(stderr.String()))
 	}
 	return json.Unmarshal(js, out)
 }
@@ -130,8 +138,11 @@ func probeDisk(target string) (diskInfo, error) {
 	}
 
 	var info duInfo
-	if err := plistJSON(&info, "diskutil", "info", "-plist", id); err != nil {
+	if err := plistJSON(&info, diskutilPath, "info", "-plist", id); err != nil {
 		return diskInfo{}, err
+	}
+	if info.DeviceIdentifier != id {
+		return diskInfo{}, fmt.Errorf("%s reported unexpected identifier %q for %q", diskutilPath, info.DeviceIdentifier, id)
 	}
 
 	size := info.TotalSize
@@ -174,7 +185,7 @@ func probeDisk(target string) (diskInfo, error) {
 // mountedOn returns every mounted volume that belongs to the given whole disk.
 func mountedOn(id string) ([]mountedVolume, error) {
 	var list duList
-	if err := plistJSON(&list, "diskutil", "list", "-plist", id); err != nil {
+	if err := plistJSON(&list, diskutilPath, "list", "-plist", id); err != nil {
 		return nil, err
 	}
 	var out []mountedVolume
@@ -195,7 +206,7 @@ func mountedOn(id string) ([]mountedVolume, error) {
 // listDisks enumerates whole disks, external ones first.
 func listDisks() ([]diskInfo, error) {
 	var list duList
-	if err := plistJSON(&list, "diskutil", "list", "-plist"); err != nil {
+	if err := plistJSON(&list, diskutilPath, "list", "-plist"); err != nil {
 		return nil, err
 	}
 	var out []diskInfo
@@ -213,14 +224,14 @@ func listDisks() ([]diskInfo, error) {
 // raw device that still has mounted volumes, so this is a prerequisite, not a
 // convenience.
 func unmountDisk(id string) error {
-	_, err := runCommand("diskutil", "unmountDisk", "/dev/"+id)
+	_, err := runCommand(diskutilPath, "unmountDisk", "/dev/"+id)
 	return err
 }
 
 // remountDisk is best effort: it is only ever used to put things back after a
 // successful run.
 func remountDisk(id string) error {
-	_, err := runCommand("diskutil", "mountDisk", "/dev/"+id)
+	_, err := runCommand(diskutilPath, "mountDisk", "/dev/"+id)
 	return err
 }
 
