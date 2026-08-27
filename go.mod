@@ -1,3 +1,3 @@
-module github.com/jokajak/home-ops/tools/drivecheck
+module github.com/jokajak/checkdrive
 
 go 1.24

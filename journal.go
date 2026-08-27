@@ -16,9 +16,9 @@ import (
 // original contents would be gone. The journal is the insurance: every
 // original block is written to a local file and flushed to disk *before* the
 // device is touched, so an interrupted run can be undone later with
-// `drivecheck -restore <journal>`.
+// `checkdrive -restore <journal>`.
 
-const journalMagic = "DRVCHKJ1"
+const journalMagic = "CHKDRVJ1"
 
 type journalHeader struct {
 	Version    int       `json:"version"`
@@ -119,7 +119,7 @@ func readJournal(path string) (journalHeader, []journalRecord, error) {
 
 	magic := make([]byte, len(journalMagic))
 	if _, err := io.ReadFull(f, magic); err != nil || string(magic) != journalMagic {
-		return hdr, nil, fmt.Errorf("%s is not a drivecheck journal", path)
+		return hdr, nil, fmt.Errorf("%s is not a checkdrive journal", path)
 	}
 	var hdrLen uint32
 	if err := binary.Read(f, binary.LittleEndian, &hdrLen); err != nil {

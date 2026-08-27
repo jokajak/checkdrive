@@ -1,4 +1,4 @@
-# drivecheck
+# checkdrive
 
 A macOS work-alike of [GRC's ValiDrive](https://www.grc.com/validrive.htm): it checks whether a
 USB stick, SD card or external SSD actually holds the capacity it advertises, and shows how fast
@@ -8,7 +8,22 @@ that does the same job on a Mac.
 Counterfeit flash is common: a controller reports 512 GB to the host while the device contains
 32 GB of flash, and the firmware papers over the gap — folding addresses back with a modulo,
 silently swallowing writes, or handing back zeros. The drive formats fine, copies files fine, and
-loses them weeks later. drivecheck finds that in a couple of minutes without filling the device.
+loses them weeks later. checkdrive finds that in a couple of minutes without filling the device.
+
+## Credit where it is due
+
+**The idea is not mine — it is Steve Gibson's.** Spot-checking a drive at locations spread
+across its whole address space instead of filling it, and mapping the per-location response
+times, is the design he published as [ValiDrive](https://www.grc.com/validrive.htm), given away
+free at [grc.com](https://www.grc.com/). ValiDrive is the original and the reference, and all
+credit for the concept — and for drawing attention to how widespread counterfeit flash is —
+belongs to him and to GRC.
+
+checkdrive exists for one reason: ValiDrive is Windows-only and I use a Mac. It is an
+independent implementation written from the published description of the approach; no code,
+text or assets from ValiDrive are used, and it is not affiliated with, endorsed by, or
+supported by GRC. **If you are on Windows, use ValiDrive instead** — it is the real thing, and
+it is free.
 
 ## What it does
 
@@ -46,18 +61,25 @@ contents you can afford to lose.
   pattern written to the highest location is looked for at `highest % M` for a list of plausible
   capacities `M`. One 4 KB read each, no writes, and it pins the fold point exactly.
 
-## Building
+## Installing
 
 ```sh
-cd tools/drivecheck
-go build -o drivecheck .        # or: task drivecheck:build   (writes to .bin/)
-go test ./...                   # or: task drivecheck:test
+go install github.com/jokajak/checkdrive@latest    # into $(go env GOPATH)/bin
 ```
 
-No third-party dependencies, so it cross-compiles from anywhere:
+Or from a checkout:
 
 ```sh
-GOOS=darwin GOARCH=arm64 go build -o drivecheck-darwin-arm64 .
+git clone https://github.com/jokajak/checkdrive && cd checkdrive
+go build -o checkdrive .
+go test ./...
+```
+
+There are no third-party dependencies, so it cross-compiles from any platform — you do not
+need a Mac to build it:
+
+```sh
+GOOS=darwin GOARCH=arm64 go build -o checkdrive-darwin-arm64 .
 ```
 
 ## Using it
@@ -65,11 +87,11 @@ GOOS=darwin GOARCH=arm64 go build -o drivecheck-darwin-arm64 .
 Raw device access needs root, and macOS refuses raw writes while the device's volumes are mounted.
 
 ```sh
-sudo ./drivecheck -list                          # what is attached
-sudo ./drivecheck -device disk4 -unmount         # the full check
-sudo ./drivecheck -device disk4 -read-only       # latency survey, never writes
-sudo ./drivecheck -device disk4 -unmount -json   # machine-readable
-sudo ./drivecheck -restore /var/folders/.../drivecheck-disk4-....journal
+sudo ./checkdrive -list                          # what is attached
+sudo ./checkdrive -device disk4 -unmount         # the full check
+sudo ./checkdrive -device disk4 -read-only       # latency survey, never writes
+sudo ./checkdrive -device disk4 -unmount -json   # machine-readable
+sudo ./checkdrive -restore /var/folders/.../checkdrive-disk4-....journal
 ```
 
 Useful flags:
@@ -88,7 +110,7 @@ Useful flags:
 | `-force` | off | allow internal or partition devices |
 | `-yes` | off | skip the confirmation prompt |
 
-Exit status is `0` if the device verified, `1` if it failed, `2` if drivecheck itself errored.
+Exit status is `0` if the device verified, `1` if it failed, `2` if checkdrive itself errored.
 
 ## Reading the output
 
@@ -110,7 +132,7 @@ Every original block is flushed to the undo journal before the device is touched
 is killed or the drive is yanked mid-run, replay it:
 
 ```sh
-sudo ./drivecheck -restore /path/to/drivecheck-disk4-….journal
+sudo ./checkdrive -restore /path/to/checkdrive-disk4-….journal
 ```
 
 The journal is deleted automatically when a run restores everything itself, and kept (with the
@@ -124,8 +146,20 @@ path printed) when it does not.
   what makes it take minutes instead of hours. A device that fails only in the regions between
   probes will pass. For an exhaustive verdict, fill the whole device with
   [`f3`](https://github.com/AltraMayor/f3) (`brew install f3`) or badblocks-style tooling, and use
-  drivecheck as the fast first pass.
+  checkdrive as the fast first pass.
 - **Timings are indicative.** They come from single 4 KB transactions, so they characterise
   responsiveness and latency outliers, not sequential throughput.
 - It reports what the device does *now*. Media that fails under sustained writes or after a power
   cycle needs a longer soak test.
+
+## Design notes
+
+[`docs/design.md`](docs/design.md) covers why the checks are built the way they are — in
+particular why randomly placed probes cannot detect the most common counterfeit, and what
+replaces them.
+
+## License
+
+MIT — see [LICENSE](LICENSE). This covers this implementation only; ValiDrive is a separate
+proprietary product and a trademark of its authors, and nothing here is derived from it. See
+[Credit where it is due](#credit-where-it-is-due).

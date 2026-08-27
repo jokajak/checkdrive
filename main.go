@@ -1,4 +1,4 @@
-// Command drivecheck verifies that a USB stick, SD card or external SSD really
+// Command checkdrive verifies that a USB stick, SD card or external SSD really
 // holds the capacity it advertises, on macOS.
 //
 // It is a work-alike of GRC's ValiDrive (Windows only): it spot-checks
@@ -54,7 +54,7 @@ func main() {
 		if errors.As(err, &fail) {
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "drivecheck: %v\n", err)
+		fmt.Fprintf(os.Stderr, "checkdrive: %v\n", err)
 		os.Exit(2)
 	}
 }
@@ -90,7 +90,7 @@ func run() error {
 
 	switch {
 	case o.showVer:
-		fmt.Printf("drivecheck %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("checkdrive %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
 		return nil
 	case o.restore != "":
 		return doRestore(o)
@@ -104,20 +104,20 @@ func run() error {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `drivecheck %s - verify that a drive holds the capacity it claims (macOS)
+	fmt.Fprintf(os.Stderr, `checkdrive %s - verify that a drive holds the capacity it claims (macOS)
 
 Usage:
-  sudo drivecheck -list
-  sudo drivecheck -device disk4 -unmount
-  sudo drivecheck -device disk4 -read-only
-  sudo drivecheck -restore /var/folders/.../drivecheck-disk4-....journal
+  sudo checkdrive -list
+  sudo checkdrive -device disk4 -unmount
+  sudo checkdrive -device disk4 -read-only
+  sudo checkdrive -restore /var/folders/.../checkdrive-disk4-....journal
 
 The check is non-destructive: the original contents of every location it
 touches are read first, saved to an undo journal, and written back at the end.
 It still writes to the device, so use it on media whose contents you can
 afford to lose, and never on a disk you cannot unmount.
 
-Exit status: 0 the device verified, 1 the device failed, 2 drivecheck errored.
+Exit status: 0 the device verified, 1 the device failed, 2 checkdrive errored.
 
 Options:
 `, version)
@@ -214,7 +214,7 @@ func doCheck(o options) error {
 	if !o.readOnly && o.journal != "none" {
 		path := o.journal
 		if path == "" {
-			path = filepath.Join(os.TempDir(), fmt.Sprintf("drivecheck-%s-%s.journal",
+			path = filepath.Join(os.TempDir(), fmt.Sprintf("checkdrive-%s-%s.journal",
 				info.Identifier, time.Now().UTC().Format("20060102T150405Z")))
 		}
 		j, err := newJournal(path, journalHeader{
@@ -352,7 +352,7 @@ func doRestore(o options) error {
 // internal drive, or a single partition rather than the whole device.
 func checkSafety(info diskInfo, o options) error {
 	if info.Internal && !o.force {
-		return fmt.Errorf("%s is an internal disk; drivecheck writes to it, so it refuses without -force", info.Identifier)
+		return fmt.Errorf("%s is an internal disk; checkdrive writes to it, so it refuses without -force", info.Identifier)
 	}
 	if !info.WholeDisk && !o.force {
 		return fmt.Errorf("%s is a partition, not a whole disk; pass the whole disk (e.g. disk4) or use -force", info.Identifier)
@@ -494,7 +494,7 @@ func emitJSON(info diskInfo, cfg runConfig, res *runResult, seedHex string, pass
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(jsonReport{
-		Tool:              "drivecheck",
+		Tool:              "checkdrive",
 		Version:           version,
 		Device:            info,
 		Seed:              seedHex,

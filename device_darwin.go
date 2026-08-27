@@ -268,7 +268,7 @@ func annotateOpenError(path string, err error) error {
 		return fmt.Errorf("%s is busy: unmount its volumes first (diskutil unmountDisk %s, or pass -unmount): %w",
 			path, strings.Replace(path, "/dev/r", "/dev/", 1), err)
 	case errors.Is(err, os.ErrPermission), errors.Is(err, syscall.EPERM):
-		return fmt.Errorf("%s: permission denied: run drivecheck with sudo: %w", path, err)
+		return fmt.Errorf("%s: permission denied: run checkdrive with sudo: %w", path, err)
 	}
 	return fmt.Errorf("open %s: %w", path, err)
 }

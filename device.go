@@ -7,7 +7,7 @@ import (
 )
 
 // errUnsupported is returned by the non-darwin build of the device layer.
-var errUnsupported = errors.New("drivecheck can only talk to raw devices on macOS")
+var errUnsupported = errors.New("checkdrive can only talk to raw devices on macOS")
 
 // blockDevice is the small surface the scan engine needs. The real
 // implementation lives in device_darwin.go; tests drive a memory-backed fake.
