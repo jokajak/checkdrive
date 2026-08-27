@@ -64,6 +64,11 @@ contents you can afford to lose.
 
 ## Installing
 
+Pre-built macOS binaries for Intel and Apple silicon are attached to every
+[GitHub release](https://github.com/jokajak/checkdrive/releases). Download the archive for your
+Mac, extract it, and move `checkdrive` somewhere on your `PATH`. A `checksums.txt` file is included
+with each release so the download can be verified before it is run.
+
 ```sh
 go install github.com/jokajak/checkdrive@latest    # into $(go env GOPATH)/bin
 ```
@@ -82,6 +87,10 @@ need a Mac to build it:
 ```sh
 GOOS=darwin GOARCH=arm64 go build -o checkdrive-darwin-arm64 .
 ```
+
+Maintainers create a release by pushing a semantic-version tag such as `v0.2.0`. GitHub Actions
+runs the test suite, builds both macOS architectures with the tag embedded as the version, and
+publishes the archives, checksums, and generated changelog to a GitHub release.
 
 ## Using it
 

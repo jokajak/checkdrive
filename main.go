@@ -25,7 +25,9 @@ import (
 	"time"
 )
 
-const version = "0.1.0"
+// version is replaced with the release tag by GoReleaser. Keeping a useful
+// fallback makes binaries built directly from a checkout easy to identify.
+var version = "devel"
 
 type options struct {
 	device     string
