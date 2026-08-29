@@ -5,6 +5,10 @@ USB stick, SD card or external SSD actually holds the capacity it advertises, an
 it responds across its whole address space. ValiDrive is Windows-only; this is a small Go program
 that does the same job on a Mac.
 
+It also has a read-only speed mode (`-speed`), in the spirit of Gibson's
+[ReadSpeed](https://www.grc.com/readspeed.htm): sequential read rates measured at the beginning,
+the middle and the end of the drive, plus the quarter points in between.
+
 Counterfeit flash is common: a controller reports 512 GB to the host while the device contains
 32 GB of flash, and the firmware papers over the gap — folding addresses back with a modulo,
 silently swallowing writes, or handing back zeros. The drive formats fine, copies files fine, and
@@ -17,7 +21,9 @@ across its whole address space instead of filling it, and mapping the per-locati
 times, is the design he published as [ValiDrive](https://www.grc.com/validrive.htm), given away
 free at [grc.com](https://www.grc.com/). ValiDrive is the original and the reference, and all
 credit for the concept — and for drawing attention to how widespread counterfeit flash is —
-belongs to him and to GRC.
+belongs to him and to GRC. The read-speed mode follows his [ReadSpeed](https://www.grc.com/readspeed.htm)
+in the same way: time sequential reads at a handful of points spread across the drive rather
+than at one place, because where a drive is slow says as much as how slow it is.
 
 checkdrive exists for one reason: ValiDrive is Windows-only and I use a Mac. It is an
 independent implementation written from the published description of the approach; no code,
@@ -38,6 +44,36 @@ it is free.
 
 The check is non-destructive by design, but it does write to the device. Use it on media whose
 contents you can afford to lose.
+
+### The read-speed survey
+
+`-speed` is a separate, read-only mode. It times sequential reads at five evenly spaced zones —
+the first starts at the very front of the device, the last ends at its last addressable block —
+and reports the rate for each one. Nothing is written, so no journal, no unmount and no
+confirmation are needed.
+
+One number for a whole drive hides the interesting part. A device that reads at 500 MB/s at the
+front and 40 MB/s at the back is telling you something: an SMR hard disk, an SSD whose SLC cache
+is exhausted or that is nearly full, a USB stick whose controller struggles on high addresses, or
+a counterfeit emulating flash it does not have. Each zone is read through a freshly reopened
+device so that one zone cannot be served from what the previous one left in a cache, and every
+transfer is timed individually, so a zone that stalls occasionally is distinguishable from one
+that is uniformly slow.
+
+```
+  position        offset    read speed  worst transfer
+  0%                 0 B    520.0 MB/s        2.02 ms   ██████████████████████
+  25%           17.18 GB    520.0 MB/s        2.02 ms   ██████████████████████
+  50%           34.36 GB    304.4 MB/s        5.83 ms   █████████████
+  75%           51.53 GB    180.0 MB/s        5.83 ms   ████████
+  100%          68.71 GB     22.0 MB/s       47.66 ms   █
+
+  beginning 520.0 MB/s   middle 304.4 MB/s   end 22.0 MB/s
+  slowest 22.0 MB/s (100%)   fastest 520.0 MB/s (0%)   overall 86.0 MB/s
+```
+
+It measures how fast the device returns data; it does **not** verify capacity. Use the default
+mode for that.
 
 ## Why it can trust what it reads
 
@@ -100,6 +136,7 @@ Raw device access needs root, and macOS refuses raw writes while the device's vo
 sudo ./checkdrive -list                          # what is attached
 sudo ./checkdrive -device disk4 -unmount         # the full check
 sudo ./checkdrive -device disk4 -read-only       # latency survey, never writes
+sudo ./checkdrive -device disk4 -speed           # read-speed survey, never writes
 sudo ./checkdrive -device disk4 -unmount -json   # machine-readable
 sudo ./checkdrive -restore /var/folders/.../checkdrive-disk4-....journal
 ```
@@ -114,13 +151,21 @@ Useful flags:
 | `-skip-start` | `1M` | leaves the partition table alone |
 | `-seed` | random | hex seed; reproduces probe placement and patterns |
 | `-read-only` | off | read and time only — does not verify capacity |
+| `-speed` | off | read-speed survey instead of the capacity check; never writes |
+| `-speed-zones` | `5` | how many evenly spaced places `-speed` times |
+| `-speed-length` | `32M` | bytes read sequentially at each zone |
+| `-speed-transfer` | `1M` | size of each read request during `-speed` |
 | `-unmount` / `-remount` | off | unmount volumes first / mount them again after |
 | `-journal` | temp file | undo journal path; `none` disables it |
 | `-restore` | — | replay an undo journal and exit |
 | `-force` | off | allow internal or partition devices |
 | `-yes` | off | skip the confirmation prompt |
 
-Exit status is `0` if the device verified, `1` if it failed, `2` if checkdrive itself errored.
+Exit status is `0` if the device verified, `1` if it failed, `2` if checkdrive itself errored. For
+`-speed`, `1` means a zone could not be read to the end.
+
+`-speed` still refuses internal disks and bare partitions without `-force`, for consistency with
+the rest of the tool, even though it only reads.
 
 ## Reading the output
 
@@ -157,8 +202,10 @@ path printed) when it does not.
   probes will pass. For an exhaustive verdict, fill the whole device with
   [`f3`](https://github.com/AltraMayor/f3) (`brew install f3`) or badblocks-style tooling, and use
   checkdrive as the fast first pass.
-- **Timings are indicative.** They come from single 4 KB transactions, so they characterise
-  responsiveness and latency outliers, not sequential throughput.
+- **Two different timings.** The capacity check's map comes from single 4 KB transactions, so it
+  characterises responsiveness and latency outliers rather than throughput. `-speed` is the
+  throughput measurement: sequential reads, but only at a handful of zones, so it is a profile of
+  the drive rather than a full-surface benchmark.
 - It reports what the device does *now*. Media that fails under sustained writes or after a power
   cycle needs a longer soak test.
 

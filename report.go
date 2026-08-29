@@ -237,3 +237,100 @@ func firstAlias(res *runResult) *sampleResult {
 	}
 	return nil
 }
+
+// humanRate formats a transfer rate the way drive benchmarks do: decimal
+// megabytes per second, so it lines up with the numbers on the packaging.
+func humanRate(bytesPerSec float64) string {
+	if bytesPerSec <= 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1f MB/s", bytesPerSec/1e6)
+}
+
+// speedBarWidth is how many cells the fastest zone's bar fills.
+const speedBarWidth = 22
+
+func speedBar(fraction float64, colorize bool) string {
+	if fraction < 0 {
+		fraction = 0
+	}
+	if fraction > 1 {
+		fraction = 1
+	}
+	cells := int(fraction*float64(speedBarWidth) + 0.5)
+	if cells == 0 && fraction > 0 {
+		cells = 1
+	}
+	glyph := "#"
+	if colorize {
+		glyph = "█"
+	}
+	return strings.Repeat(glyph, cells)
+}
+
+// speedColors runs from red for a zone at a fraction of the drive's best rate
+// to green for one at its best, which is the shape of the picture that matters:
+// a drive that falls off a cliff at the end of its address space.
+var speedColors = []int{196, 208, 226, 190, 46}
+
+func speedColor(fraction float64) int {
+	idx := int(fraction * float64(len(speedColors)))
+	if idx >= len(speedColors) {
+		idx = len(speedColors) - 1
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	return speedColors[idx]
+}
+
+// writeSpeedReport prints the read-speed survey: one row per zone, in address
+// order, so the beginning, middle and end of the device read down the page.
+func writeSpeedReport(w io.Writer, info diskInfo, res *speedResult, colorize bool) {
+	p := painter{enabled: colorize}
+
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  Device      %s\n", info.describe())
+	fmt.Fprintf(w, "  Capacity    %s claimed (%d bytes, %d byte blocks)\n", humanBytes(info.Size), info.Size, info.BlockSize)
+	fmt.Fprintf(w, "  Survey      %d zones of %s each in %s transfers, %s read in total\n",
+		len(res.Zones), humanBytes(res.ZoneBytes), humanBytes(res.ChunkSize), humanBytes(res.BytesRead))
+	fmt.Fprintf(w, "  Elapsed     %s\n", res.Duration.Round(time.Millisecond))
+
+	fmt.Fprintf(w, "\n  Sequential read speed by position (front of device at the top)\n\n")
+	fmt.Fprintf(w, "  %-9s %12s %13s %14s\n", "position", "offset", "read speed", "worst transfer")
+	for _, z := range res.Zones {
+		if !z.ok() {
+			fmt.Fprintf(w, "  %-9s %12s %13s   %s\n", z.label(), humanBytes(z.Offset),
+				p.fg(196, "failed"), z.Err)
+			continue
+		}
+		fraction := 0.0
+		if res.Fastest > 0 {
+			fraction = z.BytesPerSec / res.Fastest
+		}
+		fmt.Fprintf(w, "  %-9s %12s %13s %14s   %s\n", z.label(), humanBytes(z.Offset),
+			humanRate(z.BytesPerSec), ms(z.Transfers.MaxNS),
+			p.fg(speedColor(fraction), speedBar(fraction, colorize)))
+	}
+
+	if b, m, e := res.beginning(), res.middle(), res.end(); b != nil {
+		fmt.Fprintf(w, "\n  beginning %s   middle %s   end %s\n",
+			humanRate(b.BytesPerSec), humanRate(m.BytesPerSec), humanRate(e.BytesPerSec))
+	}
+	if res.SlowestZone >= 0 {
+		fmt.Fprintf(w, "  slowest %s (%s)   fastest %s (%s)   overall %s\n",
+			humanRate(res.Slowest), res.Zones[res.SlowestZone].label(),
+			humanRate(res.Fastest), res.Zones[res.FastestZone].label(),
+			humanRate(res.Overall))
+	}
+
+	headline, ok := speedVerdict(res)
+	color := 196
+	if ok {
+		color = 46
+	}
+	fmt.Fprintf(w, "\n  %s\n", p.bold(p.fg(color, headline)))
+	fmt.Fprintf(w, "\n  This is a read-only survey: it measures how fast the device returns data,\n"+
+		"  and does not verify that the device holds the capacity it claims.\n")
+	fmt.Fprintln(w)
+}

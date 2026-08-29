@@ -7,6 +7,11 @@
 // device so nothing can be answered from a cache, then puts the original data
 // back. Counterfeit media - which reports a large capacity but contains a
 // small amount of flash - fails those checks above its real size.
+//
+// It also has a read-only speed mode (-speed), in the spirit of GRC's
+// ReadSpeed: sequential read rates timed at the beginning, the middle and the
+// end of the device, plus the quarter points in between, because where a drive
+// is slow says as much as how slow it is.
 package main
 
 import (
@@ -38,6 +43,10 @@ type options struct {
 	seed       string
 	readOnly   bool
 	noEstimate bool
+	speed      bool
+	speedZones int
+	speedLen   string
+	speedXfer  string
 	unmount    bool
 	remount    bool
 	force      bool
@@ -77,6 +86,10 @@ func run() error {
 	flag.StringVar(&o.seed, "seed", "", "hex seed for the test patterns and sample placement (default: random each run)")
 	flag.BoolVar(&o.readOnly, "read-only", false, "only read and time the locations; never write (does not verify capacity)")
 	flag.BoolVar(&o.noEstimate, "no-estimate", false, "skip the binary search for the real capacity after a failure")
+	flag.BoolVar(&o.speed, "speed", false, "measure sequential read speed at the beginning, middle and end of the device instead of checking capacity (never writes)")
+	flag.IntVar(&o.speedZones, "speed-zones", 5, "number of evenly spaced places to time during -speed")
+	flag.StringVar(&o.speedLen, "speed-length", "32M", "bytes read sequentially at each -speed zone")
+	flag.StringVar(&o.speedXfer, "speed-transfer", "1M", "size of each read request during -speed")
 	flag.BoolVar(&o.unmount, "unmount", false, "unmount the device's volumes first (macOS refuses raw writes while they are mounted)")
 	flag.BoolVar(&o.remount, "remount", false, "mount the volumes again when the run finishes")
 	flag.BoolVar(&o.force, "force", false, "allow internal, system or partition devices (dangerous)")
@@ -101,6 +114,8 @@ func run() error {
 	case o.device == "":
 		usage()
 		return errors.New("no -device given")
+	case o.speed:
+		return doSpeed(o)
 	}
 	return doCheck(o)
 }
@@ -112,12 +127,17 @@ Usage:
   sudo checkdrive -list
   sudo checkdrive -device disk4 -unmount
   sudo checkdrive -device disk4 -read-only
+  sudo checkdrive -device disk4 -speed
   sudo checkdrive -restore /var/folders/.../checkdrive-disk4-....journal
 
 The check is non-destructive: the original contents of every location it
 touches are read first, saved to an undo journal, and written back at the end.
 It still writes to the device, so use it on media whose contents you can
 afford to lose, and never on a disk you cannot unmount.
+
+-speed is a separate, read-only mode: it times sequential reads at the
+beginning, the middle and the end of the device and writes nothing at all. It
+measures transfer rate; it does not verify capacity.
 
 Exit status: 0 the device verified, 1 the device failed, 2 checkdrive errored.
 
@@ -286,6 +306,81 @@ func doCheck(o options) error {
 		writeReport(os.Stdout, info, cfg, res, seedHex, colorEnabled(o))
 	}
 	if !pass {
+		return failedCheck{}
+	}
+	return nil
+}
+
+// doSpeed runs the read-speed survey: how fast the device hands data back at
+// the beginning, the middle, the end, and the quarter points in between. It is
+// a work-alike of GRC's ReadSpeed, and the read-only sibling of the capacity
+// check - it never writes, so it needs no journal, no unmount and no
+// confirmation.
+func doSpeed(o options) error {
+	zoneBytes, err := parseSize(o.speedLen)
+	if err != nil {
+		return fmt.Errorf("-speed-length: %w", err)
+	}
+	transfer, err := parseSize(o.speedXfer)
+	if err != nil {
+		return fmt.Errorf("-speed-transfer: %w", err)
+	}
+	if o.speedZones <= 0 {
+		return errors.New("-speed-zones must be at least 1")
+	}
+	if err := requireRoot(); err != nil {
+		return err
+	}
+
+	info, err := probeDisk(o.device)
+	if err != nil {
+		return err
+	}
+	if info.Size <= 0 {
+		return fmt.Errorf("%s reports no size; is the media present?", info.Identifier)
+	}
+
+	// Nothing is written, so mounted volumes are not in the way and there is
+	// nothing to confirm. The internal-disk and whole-disk rules still apply.
+	o.readOnly = true
+	if err := checkSafety(info, o); err != nil {
+		return err
+	}
+
+	cfg := speedConfig{
+		Zones:     o.speedZones,
+		ZoneBytes: zoneBytes,
+		ChunkSize: transfer,
+		BlockSize: info.BlockSize,
+		// Unlike the capacity check this reads from the very front of the
+		// device: -skip-start protects the partition table from writes, and
+		// there are none here.
+		Start:    0,
+		End:      info.Size,
+		Progress: progressPrinter(o),
+	}
+
+	dev, err := openDevice(info, int(alignUp(transfer, info.BlockSize)), true)
+	if err != nil {
+		return err
+	}
+	res, err := runSpeedSurvey(dev, cfg)
+	_ = dev.close()
+	if cfg.Progress != nil {
+		fmt.Fprint(os.Stderr, "\r\033[K")
+	}
+	if err != nil {
+		return err
+	}
+
+	if o.asJSON {
+		if err := emitSpeedJSON(info, res); err != nil {
+			return err
+		}
+	} else {
+		writeSpeedReport(os.Stdout, info, res, colorEnabled(o))
+	}
+	if res.Errors > 0 {
 		return failedCheck{}
 	}
 	return nil
@@ -530,5 +625,36 @@ func emitJSON(info diskInfo, cfg runConfig, res *runResult, seedHex string, pass
 		WriteStats:        computeStats(writes),
 		VerifyStats:       computeStats(verifies),
 		Result:            res,
+	})
+}
+
+type jsonSpeedReport struct {
+	Tool         string       `json:"tool"`
+	Version      string       `json:"version"`
+	Mode         string       `json:"mode"`
+	Device       diskInfo     `json:"device"`
+	Zones        int          `json:"zones"`
+	ZoneBytes    int64        `json:"zone_bytes"`
+	TransferSize int64        `json:"transfer_size"`
+	Headline     string       `json:"headline"`
+	OK           bool         `json:"ok"`
+	Result       *speedResult `json:"result"`
+}
+
+func emitSpeedJSON(info diskInfo, res *speedResult) error {
+	headline, ok := speedVerdict(res)
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(jsonSpeedReport{
+		Tool:         "checkdrive",
+		Version:      version,
+		Mode:         "speed",
+		Device:       info,
+		Zones:        len(res.Zones),
+		ZoneBytes:    res.ZoneBytes,
+		TransferSize: res.ChunkSize,
+		Headline:     headline,
+		OK:           ok,
+		Result:       res,
 	})
 }

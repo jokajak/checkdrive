@@ -9,6 +9,9 @@
   - `device_darwin.go` contains macOS-specific device access.
   - `device_other.go` provides non-macOS stubs.
   - The scan engine communicates through the `blockDevice` interface.
+- There are two modes and they answer different questions:
+  - the default capacity check (`plan.go`, `pattern.go`, `run.go`) writes, journals and restores;
+  - the read-speed survey (`speed.go`, `-speed`) only ever reads, and must stay that way.
 
 ## Safety
 

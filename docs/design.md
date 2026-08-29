@@ -74,6 +74,39 @@ one address at a time is fooled by a wrapping device for exactly the same reason
 search is only used for devices that discard, zero or error above their real capacity; where
 wrapping is detected, the fold point *is* the capacity.
 
+## The read-speed survey
+
+`-speed` is a second, read-only mode, modelled on Gibson's
+[ReadSpeed](https://www.grc.com/readspeed.htm) the way the default mode is modelled on
+ValiDrive. It answers a different question — how fast does this device hand data back, and does
+that hold up across its whole address space? — and the decisions behind it are:
+
+- **Zones, not one number.** Five evenly spaced zones by default: the first begins at the very
+  front of the device, the last ends at its last addressable block, and the rest are spread
+  between them, so the beginning, the middle and the end are always measured. A single
+  whole-drive figure hides the shape that matters — an SMR disk, an exhausted SLC cache, a
+  controller that struggles on high addresses, or a counterfeit emulating flash it does not
+  have all show up as a profile across the address space rather than as one slow average.
+- **Sequential within a zone, and a fresh descriptor between them.** Each zone reads
+  `-speed-length` bytes in `-speed-transfer` sized requests from consecutive addresses, which
+  is what "transfer rate" means; the device is reopened between zones so a zone cannot be
+  served from what the previous one left in a cache. `/dev/rdiskN` already keeps the unified
+  buffer cache out of it.
+- **Every transfer timed individually.** The per-zone rate comes from the summed transfer
+  times, and the slowest single transfer in each zone is reported next to it, so a zone that
+  stalls occasionally is distinguishable from one that is uniformly slow. The overall figure is
+  total bytes over total time, so a slow zone weighs what it actually cost rather than being
+  averaged away.
+- **Zones never overlap.** The requested zone length is capped at an equal share of the device
+  and rounded to whole transfers; on a device too small for the requested layout the zones
+  shrink, and then there are fewer of them. Re-reading the same blocks would be timing a cache.
+- **Read-only, all the way down.** The device is opened `O_RDONLY`, so there is no journal, no
+  unmount requirement and no confirmation prompt. The internal-disk and whole-disk refusals are
+  kept anyway, for consistency with the rest of the tool. It does read from offset 0 — the
+  `-skip-start` guard exists to keep writes away from the partition table, and there are none.
+- **It does not verify capacity.** A wrapping counterfeit reads back quickly and happily; only
+  the default mode catches that, and the report says so explicitly.
+
 ## Safety
 
 The tool writes to a device, so the failure modes were designed for before the features:
@@ -92,5 +125,7 @@ The tool writes to a device, so the failure modes were designed for before the f
 
 It is a spot check, not a full-surface test. A device that fails only in the regions between
 probes will pass, so [`f3`](https://github.com/AltraMayor/f3) remains the exhaustive answer
-and this is the fast first pass. Timings come from single 4 KB transactions, so they
-characterise responsiveness and latency outliers rather than sequential throughput.
+and this is the fast first pass. The default mode's timings come from single 4 KB transactions,
+so they characterise responsiveness and latency outliers rather than sequential throughput;
+`-speed` measures throughput, but only at a handful of zones, so it is a profile of the drive
+rather than a full-surface benchmark.
